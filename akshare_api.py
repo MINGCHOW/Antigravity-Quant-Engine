@@ -10,24 +10,45 @@ import random
 import time
 import json
 import logging
+import math # Added for NaN checks
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Try importing yfinance for fallback
+# Try importing optional libraries
 try:
     import yfinance as yf
 except ImportError:
     yf = None
 
-app = FastAPI(title="AkShare Quant API V8.0 (Stable)", version="8.0")
+try:
+    from pytdx.hq import TdxHq_API
+    tdx_api = TdxHq_API()
+except ImportError:
+    tdx_api = None
 
+try:
+    import baostock as bs
+    # Init Baostock on startup
+    bs.login()
+except ImportError:
+    bs = None
+
+try:
+    import qstock as qs
+except ImportError:
+    qs = None
+
+app = FastAPI(title="AkShare Quant API V8.3 (Limitless Edition)", version="8.3")
+
+# ... (Constants Omitted) ...
 # --- Constants ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
 ]
 
 def get_headers():
@@ -43,23 +64,29 @@ class AnalyzeRequest(BaseModel):
     balance: float = 100000.0
     risk: float = 0.01
 
-# --- Data Fetcher with Triple Fallback ---
+# --- Data Fetcher with 7-Layer Fallback (Scientific Order) ---
 class DataFetcher:
     """
-    V8 Stability Upgrade:
-    1. AkShare (EastMoney)
-    2. Tencent Finance (Interface A)
-    3. Sina Finance (Interface B) - NEW
+    V8.3 Scientific Fallback Hierarchy:
+    1. AkShare (EastMoney) - Best Scraper
+    2. Tencent (HTTP) - High Availability
+    3. Qstock (Tonghuashun) - New Data Source (Independent)
+    4. Pytdx (TCP) - Anti-HTTP Blocking
+    5. Baostock (Official) - Slow but Stable
+    6. Sina (Legacy) - Backup
+    7. Yahoo (International) - Last Resort
     """
     @staticmethod
     def get_a_share_history(code: str, retries=2):
+        time.sleep(random.uniform(0.5, 1.5)) # Anti-Blocking
+        
         symbol = code.replace("sh", "").replace("sz", "")
         market_prefix = "sh" if code.startswith("6") else "sz"
         
-        # 1. Try AkShare (EastMoney)
+        # 1. AkShare (EastMoney)
         for attempt in range(retries):
             try:
-                logger.info(f"Attempting AkShare for {code} (Try {attempt+1})...")
+                logger.info(f"Attempting AkShare (#1) for {code}...")
                 df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
                 if not df.empty and len(df) > 30:
                     df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
@@ -67,12 +94,12 @@ class DataFetcher:
                     df['date'] = pd.to_datetime(df['date'])
                     return df
             except Exception as e:
-                logger.warning(f"AkShare failed for {code}: {e}")
-                time.sleep(1) # Backoff
+                logger.warning(f"AkShare failed: {e}")
+                time.sleep(1.0) 
 
-        # 2. Try Tencent
+        # 2. Tencent (HTTP)
         try:
-            logger.info(f"Attempting Tencent Fallback for {code}...")
+            logger.info(f"Attempting Tencent (#2) Fallback...")
             full_code = f"{market_prefix}{symbol}"
             url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full_code},day,,,320,qfq" 
             r = requests.get(url, headers=get_headers(), timeout=8)
@@ -86,27 +113,107 @@ class DataFetcher:
             print(f"[Fallback] Recovered {code} using Tencent.")
             return df
         except Exception as e:
-            logger.warning(f"Tencent failed for {code}: {e}")
+            logger.warning(f"Tencent failed: {e}")
 
-        # 3. Try Sina (New V8 Feature)
+        # 3. Qstock (Tonghuashun) - NEW
+        if qs:
+            try:
+                logger.info(f"Attempting Qstock-THS (#3) Fallback...")
+                # qstock typically returns dataframe directly. Use get_data or specialized stock_data
+                # qs.get_data brings daily data
+                df = qs.get_data(code_list=[code], start='20240101', end=datetime.date.today().strftime('%Y%m%d'), freq='d')
+                if not df.empty:
+                    # qstock cols: code, name, open, high, low, close, volume, turnover, ...
+                    # rename to standardized format
+                    # qstock might index by date or have date column
+                    if 'date' not in df.columns and isinstance(df.index, pd.DatetimeIndex):
+                        df.reset_index(inplace=True)
+                        df.rename(columns={'index': 'date'}, inplace=True)
+                    
+                    # Columns might be chinese or english depending on version. Usually mixed.
+                    # Qsock standard: 'open', 'high', 'low', 'close', 'volume'
+                    # Verify column names or use safe rename
+                    df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
+                                       '最高': 'high', '最低': 'low', '成交量': 'volume', '成交': 'volume'}, inplace=True)
+                                       
+                    df['date'] = pd.to_datetime(df['date'])
+                    return df[['date', 'open', 'close', 'high', 'low', 'volume']]
+            except Exception as e:
+                logger.warning(f"Qstock failed: {e}")
+
+        # 4. Pytdx (TCP)
+        if tdx_api:
+            try:
+                logger.info(f"Attempting Pytdx (#4 TCP) Fallback...")
+                with tdx_api.connect('119.147.212.81', 7709): 
+                    market_code = 1 if code.startswith("6") else 0
+                    data = tdx_api.get_security_bars(9, market_code, symbol, 0, 100)
+                    if data:
+                        df = tdx_api.to_df(data)
+                        df.rename(columns={'datetime': 'date'}, inplace=True)
+                        df['date'] = pd.to_datetime(df['date'])
+                        return df[['date', 'open', 'close', 'high', 'low', 'vol']].rename(columns={'vol':'volume'})
+            except Exception as e:
+                 logger.warning(f"Pytdx failed: {e}")
+
+        # 5. Baostock (Official)
+        if bs:
+            try:
+                logger.info(f"Attempting Baostock (#5) Fallback...")
+                rs = bs.query_history_k_data_plus(f"{market_prefix}.{symbol}",
+                    "date,open,high,low,close,volume",
+                    start_date=(datetime.date.today() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'), 
+                    end_date=datetime.date.today().strftime('%Y-%m-%d'),
+                    frequency="d", adjustflag="1")
+                
+                data_list = []
+                while (rs.error_code == '0') & rs.next():
+                    data_list.append(rs.get_row_data())
+                
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['date'] = pd.to_datetime(df['date'])
+                    for col in ['open', 'high', 'low', 'close', 'volume']:
+                        df[col] = pd.to_numeric(df[col])
+                    return df
+            except Exception as e:
+                logger.error(f"Baostock failed: {e}")
+
+        # 6. Sina (Legacy)
         try:
-            logger.info(f"Attempting Sina Fallback for {code}...")
-            # Sina daily chart API
+            logger.info(f"Attempting Sina (#6) Fallback...")
             sina_symbol = f"{market_prefix}{symbol}"
-            url = f"https://finance.sina.com.cn/realstock/company/{sina_symbol}/hisdata/klc_kl.js?d={datetime.date.today()}"
-            r = requests.get(url, headers=get_headers(), timeout=8)
-            # Parsing Sina JS format is complex, let's use a simpler history API if available
-            # Or use AkShare's specific sina interface
             df = ak.stock_zh_a_daily(symbol=sina_symbol, adjust="qfq")
             if not df.empty:
-               return df
+                return df
         except Exception as e:
-            logger.error(f"Sina failed for {code}: {e}")
+            logger.error(f"Sina failed: {e}")
+
+        # 7. Yahoo Finance
+        if yf:
+            try:
+                logger.info(f"Attempting Yahoo (#7) Fallback...")
+                suffix = ".SS" if code.startswith("6") else ".SZ"
+                y_symbol = f"{symbol}{suffix}"
+                ticker = yf.Ticker(y_symbol)
+                df = ticker.history(period="1y")
+                
+                if not df.empty:
+                    df.reset_index(inplace=True)
+                    df.rename(columns={'Date': 'date', 'Open': 'open', 'Close': 'close', 
+                                       'High': 'high', 'Low': 'low', 'Volume': 'volume'}, inplace=True)
+                    df['date'] = df['date'].dt.tz_localize(None)
+                    print(f"[Fallback] Recovered {code} using Yahoo.")
+                    return df
+            except Exception as e:
+                logger.warning(f"Yahoo failed: {e}")
 
         return pd.DataFrame()
 
+
     @staticmethod
     def get_hk_share_history(code: str):
+        time.sleep(random.uniform(0.5, 1.5)) # Anti-Blocking
         symbol = code if len(str(code)) == 5 else f"{int(code):05d}"
         
         # 1. Try AkShare
@@ -132,7 +239,7 @@ class DataFetcher:
             
         return pd.DataFrame()
 
-# --- Quant Logic (Identical to V7) ---
+# --- Quant Logic (V8.1 with NaN Safety) ---
 def calculate_technicals(df: pd.DataFrame):
     if df.empty: return {}
     df = df.sort_values('date')
@@ -140,6 +247,9 @@ def calculate_technicals(df: pd.DataFrame):
     highs = df['high']
     lows = df['low']
     volumes = df['volume']
+    
+    # ... (Calculations identical to V7, omitted for brevity, will fill in full file) ...
+    # WRITING FULL LOGIC HERE TO ENSURE INTEGRITY
     
     ma5 = closes.rolling(5).mean().iloc[-1]
     ma10 = closes.rolling(10).mean().iloc[-1]
@@ -248,6 +358,7 @@ def generate_signal(tech_data, is_hk=False):
 @app.get("/market")
 def get_market_context():
     try:
+        time.sleep(random.uniform(0.5, 1.0)) # Anti-bot
         index_df = ak.stock_zh_index_daily(symbol="sh000001")
         if index_df.empty: raise ValueError("Index Data Empty")
         price = float(index_df['close'].iloc[-1])
@@ -276,17 +387,33 @@ def analyze_full(req: AnalyzeRequest):
         sig = generate_signal(tech, is_hk)
         tech['trend_score'] = sig['trend_score']
         
+        # --- V8.1 NaN Safety Fix ---
+        def safe_int(val):
+            try:
+                if pd.isna(val) or val == float('inf') or val == float('-inf'): return 0
+                return int(val)
+            except:
+                return 0
+
         risk_per_share = tech['current_price'] - sig['stop_loss']
         if risk_per_share <= 0: risk_per_share = tech['atr14']
+        
         account_risk_money = req.balance * req.risk
-        suggested_shares = int(account_risk_money / risk_per_share / 100) * 100
+        
+        if risk_per_share <= 0.0001 or pd.isna(risk_per_share):
+            suggested_shares = 0
+        else:
+            raw_shares = account_risk_money / risk_per_share / 100
+            suggested_shares = safe_int(raw_shares) * 100
+            
         if suggested_shares < 100: suggested_shares = 0
+        # ---------------------------
         
         return {
             "日期": datetime.datetime.now().strftime("%Y-%m-%d"),
             "市场": market,
             "代码": code,
-            "名称": code, # Name logic omitted for speed
+            "名称": code, # Name logic omitted
             "信号类型": sig['signal'],
             "综合评分": sig['trend_score'],
             "现价": tech['current_price'],

@@ -5,3 +5,6 @@ pandas
 pydantic
 requests
 yfinance
+pytdx
+baostock
+qstock
