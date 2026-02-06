@@ -40,20 +40,23 @@ try:
 except ImportError:
     qs = None
 
-app = FastAPI(title="AkShare Quant API V8.3 (Limitless Edition)", version="8.3")
+try:
+    import efinance as ef
+except ImportError:
+    ef = None
 
-# ... (Constants Omitted) ...
+from fake_useragent import UserAgent
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+app = FastAPI(title="AkShare Quant API V9.0 (Titan Edition)", version="9.0")
+
 # --- Constants ---
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
-]
+# Dynamic User-Agent Generator
+ua = UserAgent()
 
 def get_headers():
     return {
-        "User-Agent": random.choice(USER_AGENTS),
+        "User-Agent": ua.random,
         "Accept": "*/*",
         "Connection": "keep-alive"
     }
@@ -64,22 +67,36 @@ class AnalyzeRequest(BaseModel):
     balance: float = 100000.0
     risk: float = 0.01
 
-# --- Data Fetcher with 7-Layer Fallback (Scientific Order) ---
+# --- Data Fetcher with 8-Layer Fallback (V9.0 Titan) ---
 class DataFetcher:
     """
-    V8.4 Updates:
-    - Added `_clean_data` helper to enforce numeric types (Fixes 500 Error)
-    - Local instantiation of Pytdx API (Thread Safety)
-    - Scientific Fallback Hierarchy: AkShare->Tencent->Qstock->Pytdx->Baostock->Sina->Yahoo
+    V9.0 Titan Hierarchy:
+    0. efinance (EastMoney API) - Priority 0 (Fastest/Stable)
+    1. AkShare (EastMoney Scraper) - Priority 1
+    2. Tencent (HTTP) - High Availability
+    3. Qstock (Tonghuashun) - Independent Source
+    4. Pytdx (TCP) - Anti-Blocking
+    5. Baostock (Official) - Backup
+    6. Sina (Legacy) - Backup
+    7. Yahoo (International) - Last Resort
     """
     @staticmethod
     def _clean_data(df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize column names and types"""
+        """Standardize column names and types (V8.6 Logic)"""
         try:
+            # Normalize efinance/qstock columns if needed
+            if '日期' in df.columns: df.rename(columns={'日期': 'date'}, inplace=True)
+            if '开盘' in df.columns: df.rename(columns={'开盘': 'open'}, inplace=True)
+            if '收盘' in df.columns: df.rename(columns={'收盘': 'close'}, inplace=True)
+            if '最高' in df.columns: df.rename(columns={'最高': 'high'}, inplace=True)
+            if '最低' in df.columns: df.rename(columns={'最低': 'low'}, inplace=True)
+            if '成交量' in df.columns: df.rename(columns={'成交量': 'volume'}, inplace=True)
+            if '成交' in df.columns: df.rename(columns={'成交': 'volume'}, inplace=True)
+
             # Ensure proper columns exist
             required_cols = {'date', 'open', 'close', 'high', 'low', 'volume'}
             if not required_cols.issubset(df.columns):
-                return pd.DataFrame() # Missing columns
+                return pd.DataFrame() 
 
             # Standardize date
             df['date'] = pd.to_datetime(df['date'])
@@ -96,11 +113,22 @@ class DataFetcher:
 
     @staticmethod
     def get_a_share_history(code: str, retries=2):
-        time.sleep(random.uniform(0.5, 1.5)) # Anti-Blocking
+        time.sleep(random.uniform(0.5, 1.5)) 
         
         symbol = code.replace("sh", "").replace("sz", "")
         market_prefix = "sh" if code.startswith("6") else "sz"
         
+        # 0. efinance (Priority 0)
+        if ef:
+            try:
+                logger.info(f"Attempting efinance (#0) for {code}...")
+                # efinance uses 6-digit code
+                df = ef.stock.get_quote_history(symbol)
+                if not df.empty and len(df) > 30:
+                    return DataFetcher._clean_data(df)
+            except Exception as e:
+                logger.warning(f"efinance failed: {e}")
+
         # 1. AkShare (EastMoney)
         for attempt in range(retries):
             try:
@@ -124,7 +152,6 @@ class DataFetcher:
             k_data = data['data'][full_code]['day']
             df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
             df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
-            print(f"[Fallback] Recovered {code} using Tencent.")
             return DataFetcher._clean_data(df)
         except Exception as e:
             logger.warning(f"Tencent failed: {e}")
@@ -207,7 +234,6 @@ class DataFetcher:
                     df.rename(columns={'Date': 'date', 'Open': 'open', 'Close': 'close', 
                                        'High': 'high', 'Low': 'low', 'Volume': 'volume'}, inplace=True)
                     df['date'] = df['date'].dt.tz_localize(None)
-                    print(f"[Fallback] Recovered {code} using Yahoo.")
                     return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.warning(f"Yahoo failed: {e}")
@@ -218,9 +244,7 @@ class DataFetcher:
     @staticmethod
     def get_hk_share_history(code: str):
         try:
-            time.sleep(random.uniform(0.5, 1.5)) # Anti-Blocking
-            
-            # Safe clean of code
+            time.sleep(random.uniform(0.5, 1.5)) 
             clean_code = str(code).strip().upper().replace("HK", "")
             if not clean_code.isdigit():
                  # Handle cases like "00700" -> "00700" (fine)
@@ -259,12 +283,20 @@ class DataFetcher:
                         return DataFetcher._clean_data(df)
                 except Exception as e:
                     logger.warning(f"Yahoo HK failed for {code}: {e}")
-        except Exception as e:
-            logger.error(f"Critical crash in HK fetcher for {code}: {e}")
+        except:
+             pass
             
         return pd.DataFrame()
 
-# --- Quant Logic (V8.1 with NaN Safety) ---
+# --- Quant Logic (V8.6 Global NaN Protection) ---
+def safe_round(val, decimals=2):
+    try:
+        if pd.isna(val) or val == float('inf') or val == float('-inf'):
+            return 0.0
+        return round(float(val), decimals)
+    except:
+        return 0.0
+
 def calculate_technicals(df: pd.DataFrame):
     if df.empty: return {}
     df = df.sort_values('date')
@@ -273,9 +305,9 @@ def calculate_technicals(df: pd.DataFrame):
     lows = df['low']
     volumes = df['volume']
     
-    # ... (Calculations identical to V7, omitted for brevity, will fill in full file) ...
-    # WRITING FULL LOGIC HERE TO ENSURE INTEGRITY
-    
+    # Ensure sufficient data
+    if len(df) < 5: return {}
+
     ma5 = closes.rolling(5).mean().iloc[-1]
     ma10 = closes.rolling(10).mean().iloc[-1]
     ma20 = closes.rolling(20).mean().iloc[-1]
@@ -286,75 +318,86 @@ def calculate_technicals(df: pd.DataFrame):
     delta = closes.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    rsi14 = 100 - (100 / (1 + rs)).iloc[-1]
     
-    prev_close = closes.shift(1)
+    # Safe RSI calc
+    loss_val = loss.iloc[-1]
+    if loss_val == 0:
+        rsi14 = 100.0 if gain.iloc[-1] > 0 else 50.0 
+    else:
+        rs = gain.iloc[-1] / loss_val
+        rsi14 = 100 - (100 / (1 + rs))
+    
     tr1 = highs - lows
-    tr2 = (highs - prev_close).abs()
-    tr3 = (lows - prev_close).abs()
+    tr2 = (highs - closes.shift(1)).abs()
+    tr3 = (lows - closes.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr14 = tr.rolling(14).mean().iloc[-1]
 
     current_price = closes.iloc[-1]
-    bias_ma5 = ((current_price - ma5) / ma5) * 100 if ma5 else 0
+    # Safe Bias calc
+    bias_ma5 = ((current_price - ma5) / ma5) * 100 if (ma5 and ma5 != 0) else 0.0
     
     current_volume = volumes.iloc[-1]
     volume_ma5 = volumes.rolling(5).mean().iloc[-1]
-    volume_ratio = current_volume / volume_ma5 if volume_ma5 > 0 else 1.0
+    # Safe Volume Ratio
+    volume_ratio = current_volume / volume_ma5 if (volume_ma5 and volume_ma5 > 0) else 1.0
     
-    if ma5 > ma10 > ma20 > ma60:
-        ma_alignment = "多头排列 📈"
-    elif ma5 < ma10 < ma20 < ma60:
-        ma_alignment = "趋势向下 📉"
-    else:
-        ma_alignment = "趋势不明 ⚖️"
-    
+    ma_alignment = "趋势不明 ⚖️"
+    # Safe MA alignment check (handle NaNs)
+    if all(not pd.isna(x) for x in [ma5, ma10, ma20, ma60]):
+        if ma5 > ma10 > ma20 > ma60:
+            ma_alignment = "多头排列 📈"
+        elif ma5 < ma10 < ma20 < ma60:
+            ma_alignment = "趋势向下 📉"
+            
     recent_lows = lows.tail(20).min()
-    support_level = min(recent_lows, ma20)
+    # Safe Support/Resistance
+    support_level = min(recent_lows, ma20) if not pd.isna(ma20) else recent_lows
+    
     recent_highs = highs.tail(20).max()
-    resistance_level = max(recent_highs, ma5, ma10)
+    res_list = [x for x in [recent_highs, ma5, ma10] if not pd.isna(x)]
+    resistance_level = max(res_list) if res_list else current_price * 1.1
     
     return {
-        "current_price": round(float(current_price), 2),
-        "ma5": round(float(ma5), 2), "ma10": round(float(ma10), 2), 
-        "ma20": round(float(ma20), 2), "ma60": round(float(ma60), 2),
-        "ema13": round(float(ema13), 2), "ema26": round(float(ema26), 2),
-        "rsi14": round(float(rsi14), 2), "atr14": round(float(atr14), 3),
-        "bias_ma5": round(float(bias_ma5), 2), "volume_ratio": round(float(volume_ratio), 2),
+        "current_price": safe_round(current_price),
+        "ma5": safe_round(ma5), "ma10": safe_round(ma10), 
+        "ma20": safe_round(ma20), "ma60": safe_round(ma60),
+        "ema13": safe_round(ema13), "ema26": safe_round(ema26),
+        "rsi14": safe_round(rsi14),
+        "atr14": safe_round(atr14),
+        "bias_ma5": safe_round(bias_ma5),
+        "volume_ratio": safe_round(volume_ratio),
         "ma_alignment": ma_alignment,
-        "support_level": round(float(support_level), 2), 
-        "resistance_level": round(float(resistance_level), 2),
-        "trend_score": 0
+        "support_level": safe_round(support_level),
+        "resistance_level": safe_round(resistance_level)
     }
 
-def generate_signal(tech_data, is_hk=False):
-    price = tech_data.get('current_price', 0)
-    ma5 = tech_data.get('ma5', 0)
-    ma10 = tech_data.get('ma10', 0)
-    ma20 = tech_data.get('ma20', 0)
-    ema13 = tech_data.get('ema13', 0)
-    ema26 = tech_data.get('ema26', 0)
-    atr = tech_data.get('atr14', 0)
-    volume_ratio = tech_data.get('volume_ratio', 1.0)
-    support_level = tech_data.get('support_level', 0)
-    resistance_level = tech_data.get('resistance_level', 0)
-    
-    signal = "观望 ⚪"
-    reasons = []
+def generate_signal(tech, is_hk=False):
     score = 50
+    reasons = []
+    signal = "观望 😶"
     
-    if price > ma20: score += 10
-    if ma5 > ma10 and ma10 > ma20: score += 20
-    if ema13 > ema26: score += 20
-    if volume_ratio > 1.5:
+    p = tech.get('current_price', 0)
+    ma5 = tech.get('ma5', 0)
+    ma20 = tech.get('ma20', 0)
+    rsi = tech.get('rsi14', 50)
+    vol_ratio = tech.get('volume_ratio', 1)
+    
+    if p > ma5: score += 10
+    if p > ma20: score += 20; reasons.append("站上月线")
+    else: score -= 20; reasons.append("跌破月线")
+    
+    if rsi > 70: score -= 10; reasons.append("RSI超买")
+    elif rsi < 30: score += 10; reasons.append("RSI超卖")
+    
+    if vol_ratio > 1.5:
         reasons.append("放量上涨")
         score += 10
-    elif volume_ratio < 0.8:
+    elif vol_ratio < 0.8:
         reasons.append("缩量整理")
     
-    if price > ma20 and ma5 > ma20:
-        if abs(ma5 - ma20)/ma20 < 0.05:
+    if p > ma20 and ma5 > ma20:
+        if ma20 > 0 and abs(ma5 - ma20)/ma20 < 0.05:
             signal = "强烈买入 🚀"
             reasons.append("均线粘合突破 (VCP特征)")
         else:
@@ -362,21 +405,26 @@ def generate_signal(tech_data, is_hk=False):
             reasons.append("多头趋势")
             
     multiplier = 2.5 if is_hk else 2.0
-    atr_stop = price - (multiplier * atr)
-    stop_loss = min(atr_stop, support_level * 0.98)
-    risk_per_share = price - stop_loss
-    take_profit = price + (1.5 * risk_per_share)
-    suggested_buy = max(support_level, price * 0.98)
+    atr = tech.get('atr14', 0) if tech.get('atr14') else p * 0.03 # Fallback ATR
+    
+    atr_stop = p - (multiplier * atr)
+    supp = tech.get('support_level', 0)
+    stop_loss = min(atr_stop, supp * 0.98) if supp > 0 else atr_stop
+    
+    risk_per_share = p - stop_loss
+    take_profit = p + (1.5 * risk_per_share) if risk_per_share > 0 else p * 1.1
+    
+    suggested_buy = max(supp, p * 0.98)
     
     return {
         "signal": signal,
         "signal_reasons": reasons,
-        "trend_score": score,
-        "stop_loss": round(float(stop_loss), 2),
-        "take_profit": round(float(take_profit), 2),
-        "suggested_buy": round(float(suggested_buy), 2),
-        "support_level": round(float(support_level), 2),
-        "resistance_level": round(float(resistance_level), 2)
+        "trend_score": int(score), # int is safe
+        "stop_loss": safe_round(stop_loss),
+        "take_profit": safe_round(take_profit),
+        "suggested_buy": safe_round(suggested_buy),
+        "support_level": safe_round(supp),
+        "resistance_level": safe_round(tech.get('resistance_level', 0))
     }
 
 # --- Endpoints ---
@@ -389,7 +437,7 @@ def get_market_context():
         price = float(index_df['close'].iloc[-1])
         ma20 = float(index_df['close'].rolling(20).mean().iloc[-1])
         status = "Bull" if price > ma20 else "Bear"
-        return {"market_status": status, "index_price": price, "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        return {"market_status": status, "index_price": safe_round(price), "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     except Exception as e:
         return {"market_status": "Correction", "error": str(e)}
 
@@ -412,33 +460,25 @@ def analyze_full(req: AnalyzeRequest):
         sig = generate_signal(tech, is_hk)
         tech['trend_score'] = sig['trend_score']
         
-        # --- V8.1 NaN Safety Fix ---
-        def safe_int(val):
-            try:
-                if pd.isna(val) or val == float('inf') or val == float('-inf'): return 0
-                return int(val)
-            except:
-                return 0
-
+        # Risk Logic
         risk_per_share = tech['current_price'] - sig['stop_loss']
         if risk_per_share <= 0: risk_per_share = tech['atr14']
         
         account_risk_money = req.balance * req.risk
         
-        if risk_per_share <= 0.0001 or pd.isna(risk_per_share):
+        if risk_per_share <= 0.0001:
             suggested_shares = 0
         else:
             raw_shares = account_risk_money / risk_per_share / 100
-            suggested_shares = safe_int(raw_shares) * 100
+            suggested_shares = int(raw_shares) * 100
             
         if suggested_shares < 100: suggested_shares = 0
-        # ---------------------------
         
         return {
             "日期": datetime.datetime.now().strftime("%Y-%m-%d"),
             "市场": market,
             "代码": code,
-            "名称": code, # Name logic omitted
+            "名称": code, 
             "信号类型": sig['signal'],
             "综合评分": sig['trend_score'],
             "现价": tech['current_price'],
@@ -455,8 +495,8 @@ def analyze_full(req: AnalyzeRequest):
             "technical": tech,
             "signal": sig,
             "risk_ctrl": {
-                "suggested_position": suggested_shares,
-                "risk_money": account_risk_money
+                "risk_per_share": safe_round(risk_per_share),
+                "suggested_position": suggested_shares
             },
             "prompt_data": {
                 "price_info": f"现价: {tech['current_price']}, MA20: {tech['ma20']}",
