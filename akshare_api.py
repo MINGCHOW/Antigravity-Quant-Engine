@@ -3,152 +3,320 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import akshare as ak
 import pandas as pd
+import requests
 import datetime
 import traceback
 import random
 import time
+import json
+import logging
 
-app = FastAPI(title="AkShare Quant API", version="6.0")
+# Setup Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Try importing yfinance for fallback
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
+app = FastAPI(title="AkShare Quant API V8.0 (Stable)", version="8.0")
+
+# --- Constants ---
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+]
+
+def get_headers():
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "*/*",
+        "Connection": "keep-alive"
+    }
 
 # --- Models ---
-
-class StockRequest(BaseModel):
+class AnalyzeRequest(BaseModel):
     code: str
-    price: float
-    atr: float
     balance: float = 100000.0
     risk: float = 0.01
 
-# --- Logic (Ported from v6_quant_engine.py) ---
+# --- Data Fetcher with Triple Fallback ---
+class DataFetcher:
+    """
+    V8 Stability Upgrade:
+    1. AkShare (EastMoney)
+    2. Tencent Finance (Interface A)
+    3. Sina Finance (Interface B) - NEW
+    """
+    @staticmethod
+    def get_a_share_history(code: str, retries=2):
+        symbol = code.replace("sh", "").replace("sz", "")
+        market_prefix = "sh" if code.startswith("6") else "sz"
+        
+        # 1. Try AkShare (EastMoney)
+        for attempt in range(retries):
+            try:
+                logger.info(f"Attempting AkShare for {code} (Try {attempt+1})...")
+                df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+                if not df.empty and len(df) > 30:
+                    df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
+                                       '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+                    df['date'] = pd.to_datetime(df['date'])
+                    return df
+            except Exception as e:
+                logger.warning(f"AkShare failed for {code}: {e}")
+                time.sleep(1) # Backoff
 
+        # 2. Try Tencent
+        try:
+            logger.info(f"Attempting Tencent Fallback for {code}...")
+            full_code = f"{market_prefix}{symbol}"
+            url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full_code},day,,,320,qfq" 
+            r = requests.get(url, headers=get_headers(), timeout=8)
+            data = r.json()
+            k_data = data['data'][full_code]['day']
+            df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
+            df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+            df['date'] = pd.to_datetime(df['date'])
+            for col in ['open', 'close', 'high', 'low', 'volume']:
+                df[col] = pd.to_numeric(df[col])
+            print(f"[Fallback] Recovered {code} using Tencent.")
+            return df
+        except Exception as e:
+            logger.warning(f"Tencent failed for {code}: {e}")
+
+        # 3. Try Sina (New V8 Feature)
+        try:
+            logger.info(f"Attempting Sina Fallback for {code}...")
+            # Sina daily chart API
+            sina_symbol = f"{market_prefix}{symbol}"
+            url = f"https://finance.sina.com.cn/realstock/company/{sina_symbol}/hisdata/klc_kl.js?d={datetime.date.today()}"
+            r = requests.get(url, headers=get_headers(), timeout=8)
+            # Parsing Sina JS format is complex, let's use a simpler history API if available
+            # Or use AkShare's specific sina interface
+            df = ak.stock_zh_a_daily(symbol=sina_symbol, adjust="qfq")
+            if not df.empty:
+               return df
+        except Exception as e:
+            logger.error(f"Sina failed for {code}: {e}")
+
+        return pd.DataFrame()
+
+    @staticmethod
+    def get_hk_share_history(code: str):
+        symbol = code if len(str(code)) == 5 else f"{int(code):05d}"
+        
+        # 1. Try AkShare
+        try:
+            df = ak.stock_hk_daily(symbol=symbol, adjust="qfq")
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                return df
+        except: pass
+
+        # 2. Try Yahoo
+        if yf:
+            try:
+                y_symbol = f"{int(symbol):04d}.HK" 
+                ticker = yf.Ticker(y_symbol)
+                df = ticker.history(period="1y")
+                df.reset_index(inplace=True)
+                df.rename(columns={'Date': 'date', 'Open': 'open', 'Close': 'close', 
+                                   'High': 'high', 'Low': 'low', 'Volume': 'volume'}, inplace=True)
+                df['date'] = df['date'].dt.tz_localize(None)
+                return df
+            except: pass
+            
+        return pd.DataFrame()
+
+# --- Quant Logic (Identical to V7) ---
+def calculate_technicals(df: pd.DataFrame):
+    if df.empty: return {}
+    df = df.sort_values('date')
+    closes = df['close']
+    highs = df['high']
+    lows = df['low']
+    volumes = df['volume']
+    
+    ma5 = closes.rolling(5).mean().iloc[-1]
+    ma10 = closes.rolling(10).mean().iloc[-1]
+    ma20 = closes.rolling(20).mean().iloc[-1]
+    ma60 = closes.rolling(60).mean().iloc[-1]
+    ema13 = closes.ewm(span=13, adjust=False).mean().iloc[-1]
+    ema26 = closes.ewm(span=26, adjust=False).mean().iloc[-1]
+    
+    delta = closes.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    rsi14 = 100 - (100 / (1 + rs)).iloc[-1]
+    
+    prev_close = closes.shift(1)
+    tr1 = highs - lows
+    tr2 = (highs - prev_close).abs()
+    tr3 = (lows - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean().iloc[-1]
+
+    current_price = closes.iloc[-1]
+    bias_ma5 = ((current_price - ma5) / ma5) * 100 if ma5 else 0
+    
+    current_volume = volumes.iloc[-1]
+    volume_ma5 = volumes.rolling(5).mean().iloc[-1]
+    volume_ratio = current_volume / volume_ma5 if volume_ma5 > 0 else 1.0
+    
+    if ma5 > ma10 > ma20 > ma60:
+        ma_alignment = "多头排列 📈"
+    elif ma5 < ma10 < ma20 < ma60:
+        ma_alignment = "趋势向下 📉"
+    else:
+        ma_alignment = "趋势不明 ⚖️"
+    
+    recent_lows = lows.tail(20).min()
+    support_level = min(recent_lows, ma20)
+    recent_highs = highs.tail(20).max()
+    resistance_level = max(recent_highs, ma5, ma10)
+    
+    return {
+        "current_price": round(float(current_price), 2),
+        "ma5": round(float(ma5), 2), "ma10": round(float(ma10), 2), 
+        "ma20": round(float(ma20), 2), "ma60": round(float(ma60), 2),
+        "ema13": round(float(ema13), 2), "ema26": round(float(ema26), 2),
+        "rsi14": round(float(rsi14), 2), "atr14": round(float(atr14), 3),
+        "bias_ma5": round(float(bias_ma5), 2), "volume_ratio": round(float(volume_ratio), 2),
+        "ma_alignment": ma_alignment,
+        "support_level": round(float(support_level), 2), 
+        "resistance_level": round(float(resistance_level), 2),
+        "trend_score": 0
+    }
+
+def generate_signal(tech_data, is_hk=False):
+    price = tech_data.get('current_price', 0)
+    ma5 = tech_data.get('ma5', 0)
+    ma10 = tech_data.get('ma10', 0)
+    ma20 = tech_data.get('ma20', 0)
+    ema13 = tech_data.get('ema13', 0)
+    ema26 = tech_data.get('ema26', 0)
+    atr = tech_data.get('atr14', 0)
+    volume_ratio = tech_data.get('volume_ratio', 1.0)
+    support_level = tech_data.get('support_level', 0)
+    resistance_level = tech_data.get('resistance_level', 0)
+    
+    signal = "观望 ⚪"
+    reasons = []
+    score = 50
+    
+    if price > ma20: score += 10
+    if ma5 > ma10 and ma10 > ma20: score += 20
+    if ema13 > ema26: score += 20
+    if volume_ratio > 1.5:
+        reasons.append("放量上涨")
+        score += 10
+    elif volume_ratio < 0.8:
+        reasons.append("缩量整理")
+    
+    if price > ma20 and ma5 > ma20:
+        if abs(ma5 - ma20)/ma20 < 0.05:
+            signal = "强烈买入 🚀"
+            reasons.append("均线粘合突破 (VCP特征)")
+        else:
+            signal = "买入 🟢"
+            reasons.append("多头趋势")
+            
+    multiplier = 2.5 if is_hk else 2.0
+    atr_stop = price - (multiplier * atr)
+    stop_loss = min(atr_stop, support_level * 0.98)
+    risk_per_share = price - stop_loss
+    take_profit = price + (1.5 * risk_per_share)
+    suggested_buy = max(support_level, price * 0.98)
+    
+    return {
+        "signal": signal,
+        "signal_reasons": reasons,
+        "trend_score": score,
+        "stop_loss": round(float(stop_loss), 2),
+        "take_profit": round(float(take_profit), 2),
+        "suggested_buy": round(float(suggested_buy), 2),
+        "support_level": round(float(support_level), 2),
+        "resistance_level": round(float(resistance_level), 2)
+    }
+
+# --- Endpoints ---
 @app.get("/market")
 def get_market_context():
-    """获取大盘环境数据 (上证指数 + 北向资金)"""
     try:
-        # 随机延迟，防止上游风控
-        time.sleep(random.uniform(1.0, 3.0))
-
-        # 1. 获取上证指数日线数据 (sh000001)
         index_df = ak.stock_zh_index_daily(symbol="sh000001")
-        
-        if index_df.empty:
-            raise ValueError("无法获取上证指数数据")
-
-        index_df['date'] = pd.to_datetime(index_df['date'])
-        index_df = index_df.sort_values('date')
-        
-        # 计算 MA20
-        index_df['MA20'] = index_df['close'].rolling(window=20).mean()
-        
-        last_row = index_df.iloc[-1]
-        last_price = float(last_row['close'])
-        last_ma20 = float(last_row['MA20'])
-        
-        if last_price > last_ma20:
-            status = "Bull"
-            reason = "上证指数站上 20 日均线，趋势向好"
-            sentiment = 80
-        else:
-            status = "Bear"
-            reason = "上证指数跌破 20 日均线，趋势走弱"
-            sentiment = 40
-
-        return {
-            "market_status": status,
-            "market_reason": reason,
-            "index_price": last_price,
-            "index_ma20": round(last_ma20, 2),
-            "sentiment_score": sentiment,
-            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-
+        if index_df.empty: raise ValueError("Index Data Empty")
+        price = float(index_df['close'].iloc[-1])
+        ma20 = float(index_df['close'].rolling(20).mean().iloc[-1])
+        status = "Bull" if price > ma20 else "Bear"
+        return {"market_status": status, "index_price": price, "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     except Exception as e:
-        print(traceback.format_exc())
-        return {
-            "market_status": "Correction",
-            "market_reason": f"System Error: {str(e)}",
-            "sentiment_score": 50
-        }
+        return {"market_status": "Correction", "error": str(e)}
 
-@app.post("/stock")
-def analyze_stock(req: StockRequest):
-    """个股深度分析 + 仓位计算"""
+@app.post("/analyze_full")
+def analyze_full(req: AnalyzeRequest):
     try:
-        # 随机延迟
-        time.sleep(random.uniform(1.0, 3.0))
-
-        stock_code = req.code
-        is_hk = len(str(stock_code)) == 5
-        
-        fundamental_info = {
-            "pe_ttm": None,
-            "market_cap": None,
-            "name": stock_code
-        }
-
-        # 1. 获取基本面 (A股 Only)
-        if not is_hk:
-            try:
-                clean_code = str(stock_code).replace("sz", "").replace("sh", "")
-                info_df = ak.stock_individual_info_em(symbol=clean_code)
-                
-                def get_val(item_name):
-                    rows = info_df[info_df['item'] == item_name]
-                    if not rows.empty:
-                        return rows.iloc[0]['value']
-                    return None
-
-                fundamental_info['pe_ttm'] = get_val('市盈率(TTM)')
-                fundamental_info['market_cap'] = get_val('总市值')
-                fundamental_info['name'] = get_val('股票简称') or stock_code
-
-            except Exception as e:
-                print(f"Warning: Fundamental fetch failed for {stock_code}: {e}")
-
-        # 2. 仓位计算
-        atr_value = req.atr if req.atr > 0 else req.price * 0.03
-        
-        stop_loss_width = 2.0 * atr_value
+        code = req.code
+        is_hk = len(str(code)) == 5
         if is_hk:
-            stop_loss_width = 2.5 * atr_value
-
-        risk_amount = req.balance * req.risk
-        shares_raw = risk_amount / stop_loss_width
+            df = DataFetcher.get_hk_share_history(code)
+            market = "HK"
+        else:
+            df = DataFetcher.get_a_share_history(code)
+            market = "CN"
+            
+        if df.empty:
+            return {"error": "No Data found", "code": code}
+            
+        tech = calculate_technicals(df)
+        sig = generate_signal(tech, is_hk)
+        tech['trend_score'] = sig['trend_score']
         
-        lot_size = 100
-        position_shares = int(shares_raw // lot_size) * lot_size
+        risk_per_share = tech['current_price'] - sig['stop_loss']
+        if risk_per_share <= 0: risk_per_share = tech['atr14']
+        account_risk_money = req.balance * req.risk
+        suggested_shares = int(account_risk_money / risk_per_share / 100) * 100
+        if suggested_shares < 100: suggested_shares = 0
         
-        cost = position_shares * req.price
-        if cost > req.balance:
-            position_shares = int((req.balance // req.price) // lot_size) * lot_size
-            cost = position_shares * req.price
-
-        # 3. 预警
-        warnings = []
-        pe = fundamental_info.get('pe_ttm')
-        if pe and isinstance(pe, (int, float)):
-            if pe > 80:
-                warnings.append("⚠️ 高估值预警: PE(TTM) > 80")
-            elif pe < 0:
-                warnings.append("⚠️ 业绩亏损预警: PE为负")
-
         return {
-            "stock_name": fundamental_info['name'],
-            "pe_ttm": pe,
-            "market_cap": fundamental_info['market_cap'],
-            "risk_analysis": {
-                "account_balance": req.balance,
-                "risk_per_trade": req.risk,
-                "suggested_position": position_shares,
-                "estimated_cost": cost
+            "日期": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "市场": market,
+            "代码": code,
+            "名称": code, # Name logic omitted for speed
+            "信号类型": sig['signal'],
+            "综合评分": sig['trend_score'],
+            "现价": tech['current_price'],
+            "ATR": tech['atr14'],
+            "乖离率": tech['bias_ma5'],
+            "RSI": tech['rsi14'],
+            "量比": tech['volume_ratio'],
+            "均线形态": tech['ma_alignment'],
+            "买入价": sig['suggested_buy'],
+            "止损价": sig['stop_loss'],
+            "目标价": sig['take_profit'],
+            "支撑位": sig['support_level'],
+            "压力位": sig['resistance_level'],
+            "technical": tech,
+            "signal": sig,
+            "risk_ctrl": {
+                "suggested_position": suggested_shares,
+                "risk_money": account_risk_money
             },
-            "warnings": warnings
+            "prompt_data": {
+                "price_info": f"现价: {tech['current_price']}, MA20: {tech['ma20']}",
+                "risk_info": f"止损: {sig['stop_loss']}, ATR: {tech['atr14']}",
+                "volume_info": f"量比: {tech['volume_ratio']}, 均线: {tech['ma_alignment']}",
+                "levels_info": f"支撑: {sig['support_level']}, 压力: {sig['resistance_level']}"
+            }
         }
-
     except Exception as e:
-        print(traceback.format_exc())
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/")
-def health_check():
-    return {"status": "ok", "service": "AkShare API V6.0"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
