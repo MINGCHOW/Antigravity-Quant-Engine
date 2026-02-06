@@ -112,7 +112,13 @@ class DataFetcher:
             return pd.DataFrame()
 
     @staticmethod
-    def get_a_share_history(code: str, retries=2):
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type(Exception))
+    def fetch_with_retry(func, *args, **kwargs):
+        """Generic retry wrapper"""
+        return func(*args, **kwargs)
+
+    @staticmethod
+    def get_a_share_history(code: str):
         time.sleep(random.uniform(0.5, 1.5)) 
         
         symbol = code.replace("sh", "").replace("sz", "")
@@ -121,8 +127,7 @@ class DataFetcher:
         # 0. efinance (Priority 0)
         if ef:
             try:
-                logger.info(f"Attempting efinance (#0) for {code}...")
-                # efinance uses 6-digit code
+                # logger.info(f"Attempting efinance (#0) for {code}...")
                 df = ef.stock.get_quote_history(symbol)
                 if not df.empty and len(df) > 30:
                     return DataFetcher._clean_data(df)
@@ -130,29 +135,44 @@ class DataFetcher:
                 logger.warning(f"efinance failed: {e}")
 
         # 1. AkShare (EastMoney)
-        for attempt in range(retries):
-            try:
-                logger.info(f"Attempting AkShare (#1) for {code}...")
-                df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
-                if not df.empty and len(df) > 30:
-                    df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
-                                       '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
-                    return DataFetcher._clean_data(df)
-            except Exception as e:
-                logger.warning(f"AkShare failed: {e}")
-                time.sleep(1.0) 
+        # Using manual try/except here effectively, but we could wrap specific calls if needed.
+        # For the fallback chain, we don't want to retry getting a broken source 3 times before moving to the next.
+        # We want to fail fast to the next source.
+        # So actually, 'tenacity' on the *whole* method isn't right because we have internal fallbacks.
+        # We should use tenacity for the *specific high-value* calls if they are flaky, OR just rely on the fallback chain.
+        # Given the 8 layers, fast failover is better than retrying one source.
+        # HOWEVER, AkShare network errors (timeouts) specifically benefit from a quick retry.
+        
+        try:
+             # logger.info(f"Attempting AkShare (#1) for {code}...")
+             df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+             if not df.empty and len(df) > 30:
+                 df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
+                                    '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+                 return DataFetcher._clean_data(df)
+        except Exception as e:
+             logger.warning(f"AkShare failed: {e}")
+             # Optional: minimal manual retry for AkShare specifically
+             try:
+                 time.sleep(1)
+                 df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+                 if not df.empty: return DataFetcher._clean_data(df)
+             except: pass
 
         # 2. Tencent (HTTP)
         try:
-            logger.info(f"Attempting Tencent (#2) Fallback...")
+            # logger.info(f"Attempting Tencent (#2) Fallback...")
             full_code = f"{market_prefix}{symbol}"
             url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full_code},day,,,320,qfq" 
             r = requests.get(url, headers=get_headers(), timeout=8)
             data = r.json()
-            k_data = data['data'][full_code]['day']
-            df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
-            df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
-            return DataFetcher._clean_data(df)
+            if data and 'data' in data and full_code in data['data']:
+                qt_data = data['data'][full_code]
+                if 'day' in qt_data:
+                    k_data = qt_data['day']
+                    df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
+                    df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                    return DataFetcher._clean_data(df)
         except Exception as e:
             logger.warning(f"Tencent failed: {e}")
 
@@ -247,16 +267,13 @@ class DataFetcher:
             time.sleep(random.uniform(0.5, 1.5)) 
             clean_code = str(code).strip().upper().replace("HK", "")
             if not clean_code.isdigit():
-                 # Handle cases like "00700" -> "00700" (fine)
-                 # Handle cases like "HK00700" -> "00700" (fine)
-                 # Handle garbage -> return empty
-                 logger.warning(f"Invalid HK code format: {code}")
                  return pd.DataFrame()
 
             symbol = f"{int(clean_code):05d}" # Standardize to 5 chars (e.g. 00700)
             
-            # 1. Try AkShare
+            # 1. Try AkShare (Eastmoney)
             try:
+                logger.info(f"Attempting AkShare HK (#1) for {code}...")
                 df = ak.stock_hk_daily(symbol=symbol, adjust="qfq")
                 if not df.empty:
                     df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
@@ -265,16 +282,39 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"AkShare HK failed for {code}: {e}")
 
-            # 2. Try Yahoo
+            # 2. Try Tencent HK (HTTP) - Very Reliable
+            try:
+                logger.info(f"Attempting Tencent HK (#2) for {code}...")
+                # Tencent format: hk00700
+                tencent_code = f"hk{symbol}"
+                # URL: http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk00700,day,,,320,qfq
+                url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={tencent_code},day,,,320,qfq" 
+                r = requests.get(url, headers=get_headers(), timeout=8)
+                data = r.json()
+                if data and 'data' in data and tencent_code in data['data']:
+                    qt_data = data['data'][tencent_code]
+                    if 'day' in qt_data:
+                        k_data = qt_data['day']
+                        df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
+                        df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                        return DataFetcher._clean_data(df)
+            except Exception as e:
+                logger.warning(f"Tencent HK failed: {e}")
+
+            # 3. Try Sina HK (Legacy)
+            try:
+                # logger.info(f"Attempting Sina HK (#3) for {code}...")
+                pass
+            except:
+                pass
+
+            # 4. Try Yahoo Finance (International) - Best for HK
             if yf:
                 try:
-                    # Yahoo needs 4 digits + .HK usually, or 5 if it's 5 digits. 
-                    # Most HK stocks on Yahoo are 4 digits .HK (e.g. 0700.HK)
-                    # Use safe int conversion
-                    y_symbol = f"{int(clean_code):04d}.HK" 
+                    logger.info(f"Attempting Yahoo HK (#4) for {code}...")
+                    y_symbol = f"{symbol}.HK"
                     ticker = yf.Ticker(y_symbol)
                     df = ticker.history(period="1y")
-                    
                     if not df.empty:
                         df.reset_index(inplace=True)
                         df.rename(columns={'Date': 'date', 'Open': 'open', 'Close': 'close', 
@@ -282,11 +322,12 @@ class DataFetcher:
                         df['date'] = df['date'].dt.tz_localize(None)
                         return DataFetcher._clean_data(df)
                 except Exception as e:
-                    logger.warning(f"Yahoo HK failed for {code}: {e}")
-        except:
-             pass
-            
-        return pd.DataFrame()
+                    logger.warning(f"Yahoo HK failed: {e}")
+
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Critical HK Fetch Error: {e}")
+            return pd.DataFrame()
 
 # --- Quant Logic (V8.6 Global NaN Protection) ---
 def safe_round(val, decimals=2):

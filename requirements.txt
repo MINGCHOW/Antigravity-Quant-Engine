@@ -11,3 +11,4 @@ qstock
 efinance>=0.5.5
 tenacity>=8.2.0
 fake-useragent>=1.4.0
+openpyxl>=3.0.0
