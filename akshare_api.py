@@ -67,15 +67,33 @@ class AnalyzeRequest(BaseModel):
 # --- Data Fetcher with 7-Layer Fallback (Scientific Order) ---
 class DataFetcher:
     """
-    V8.3 Scientific Fallback Hierarchy:
-    1. AkShare (EastMoney) - Best Scraper
-    2. Tencent (HTTP) - High Availability
-    3. Qstock (Tonghuashun) - New Data Source (Independent)
-    4. Pytdx (TCP) - Anti-HTTP Blocking
-    5. Baostock (Official) - Slow but Stable
-    6. Sina (Legacy) - Backup
-    7. Yahoo (International) - Last Resort
+    V8.4 Updates:
+    - Added `_clean_data` helper to enforce numeric types (Fixes 500 Error)
+    - Local instantiation of Pytdx API (Thread Safety)
+    - Scientific Fallback Hierarchy: AkShare->Tencent->Qstock->Pytdx->Baostock->Sina->Yahoo
     """
+    @staticmethod
+    def _clean_data(df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize column names and types"""
+        try:
+            # Ensure proper columns exist
+            required_cols = {'date', 'open', 'close', 'high', 'low', 'volume'}
+            if not required_cols.issubset(df.columns):
+                return pd.DataFrame() # Missing columns
+
+            # Standardize date
+            df['date'] = pd.to_datetime(df['date'])
+            
+            # Enforce numeric types (Critical for calculation safety)
+            for col in ['open', 'close', 'high', 'low', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Drop NaNs created by coercion
+            df.dropna(subset=['open', 'close'], inplace=True)
+            return df
+        except:
+            return pd.DataFrame()
+
     @staticmethod
     def get_a_share_history(code: str, retries=2):
         time.sleep(random.uniform(0.5, 1.5)) # Anti-Blocking
@@ -91,8 +109,7 @@ class DataFetcher:
                 if not df.empty and len(df) > 30:
                     df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
                                        '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
-                    df['date'] = pd.to_datetime(df['date'])
-                    return df
+                    return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.warning(f"AkShare failed: {e}")
                 time.sleep(1.0) 
@@ -107,54 +124,44 @@ class DataFetcher:
             k_data = data['data'][full_code]['day']
             df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
             df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
-            df['date'] = pd.to_datetime(df['date'])
-            for col in ['open', 'close', 'high', 'low', 'volume']:
-                df[col] = pd.to_numeric(df[col])
             print(f"[Fallback] Recovered {code} using Tencent.")
-            return df
+            return DataFetcher._clean_data(df)
         except Exception as e:
             logger.warning(f"Tencent failed: {e}")
 
-        # 3. Qstock (Tonghuashun) - NEW
+        # 3. Qstock (Tonghuashun)
         if qs:
             try:
                 logger.info(f"Attempting Qstock-THS (#3) Fallback...")
-                # qstock typically returns dataframe directly. Use get_data or specialized stock_data
-                # qs.get_data brings daily data
                 df = qs.get_data(code_list=[code], start='20240101', end=datetime.date.today().strftime('%Y%m%d'), freq='d')
                 if not df.empty:
-                    # qstock cols: code, name, open, high, low, close, volume, turnover, ...
-                    # rename to standardized format
-                    # qstock might index by date or have date column
                     if 'date' not in df.columns and isinstance(df.index, pd.DatetimeIndex):
                         df.reset_index(inplace=True)
                         df.rename(columns={'index': 'date'}, inplace=True)
                     
-                    # Columns might be chinese or english depending on version. Usually mixed.
-                    # Qsock standard: 'open', 'high', 'low', 'close', 'volume'
-                    # Verify column names or use safe rename
+                    # Try renaming standard Chinese columns
                     df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
                                        '最高': 'high', '最低': 'low', '成交量': 'volume', '成交': 'volume'}, inplace=True)
-                                       
-                    df['date'] = pd.to_datetime(df['date'])
-                    return df[['date', 'open', 'close', 'high', 'low', 'volume']]
+                    
+                    return DataFetcher._clean_data(df[['date', 'open', 'close', 'high', 'low', 'volume']])
             except Exception as e:
                 logger.warning(f"Qstock failed: {e}")
 
-        # 4. Pytdx (TCP)
-        if tdx_api:
-            try:
-                logger.info(f"Attempting Pytdx (#4 TCP) Fallback...")
-                with tdx_api.connect('119.147.212.81', 7709): 
-                    market_code = 1 if code.startswith("6") else 0
-                    data = tdx_api.get_security_bars(9, market_code, symbol, 0, 100)
-                    if data:
-                        df = tdx_api.to_df(data)
-                        df.rename(columns={'datetime': 'date'}, inplace=True)
-                        df['date'] = pd.to_datetime(df['date'])
-                        return df[['date', 'open', 'close', 'high', 'low', 'vol']].rename(columns={'vol':'volume'})
-            except Exception as e:
-                 logger.warning(f"Pytdx failed: {e}")
+        # 4. Pytdx (TCP) - Thread Safe Version
+        # Note: Do not use global tdx_api instance for concurrency safety
+        try:
+            from pytdx.hq import TdxHq_API
+            local_tdx = TdxHq_API()
+            logger.info(f"Attempting Pytdx (#4 TCP) Fallback...")
+            with local_tdx.connect('119.147.212.81', 7709): 
+                market_code = 1 if code.startswith("6") else 0
+                data = local_tdx.get_security_bars(9, market_code, symbol, 0, 100)
+                if data:
+                    df = local_tdx.to_df(data)
+                    df.rename(columns={'datetime': 'date', 'vol': 'volume'}, inplace=True)
+                    return DataFetcher._clean_data(df[['date', 'open', 'close', 'high', 'low', 'volume']])
+        except Exception as e:
+             logger.warning(f"Pytdx failed: {e}")
 
         # 5. Baostock (Official)
         if bs:
@@ -172,10 +179,7 @@ class DataFetcher:
                 
                 if data_list:
                     df = pd.DataFrame(data_list, columns=rs.fields)
-                    df['date'] = pd.to_datetime(df['date'])
-                    for col in ['open', 'high', 'low', 'close', 'volume']:
-                        df[col] = pd.to_numeric(df[col])
-                    return df
+                    return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.error(f"Baostock failed: {e}")
 
@@ -185,7 +189,7 @@ class DataFetcher:
             sina_symbol = f"{market_prefix}{symbol}"
             df = ak.stock_zh_a_daily(symbol=sina_symbol, adjust="qfq")
             if not df.empty:
-                return df
+                return DataFetcher._clean_data(df)
         except Exception as e:
             logger.error(f"Sina failed: {e}")
 
@@ -204,7 +208,7 @@ class DataFetcher:
                                        'High': 'high', 'Low': 'low', 'Volume': 'volume'}, inplace=True)
                     df['date'] = df['date'].dt.tz_localize(None)
                     print(f"[Fallback] Recovered {code} using Yahoo.")
-                    return df
+                    return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.warning(f"Yahoo failed: {e}")
 
@@ -220,8 +224,10 @@ class DataFetcher:
         try:
             df = ak.stock_hk_daily(symbol=symbol, adjust="qfq")
             if not df.empty:
-                df['date'] = pd.to_datetime(df['date'])
-                return df
+                # Basic cleaning for HK data too
+                df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
+                                   '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+                return DataFetcher._clean_data(df)
         except: pass
 
         # 2. Try Yahoo
@@ -234,7 +240,7 @@ class DataFetcher:
                 df.rename(columns={'Date': 'date', 'Open': 'open', 'Close': 'close', 
                                    'High': 'high', 'Low': 'low', 'Volume': 'volume'}, inplace=True)
                 df['date'] = df['date'].dt.tz_localize(None)
-                return df
+                return DataFetcher._clean_data(df)
             except: pass
             
         return pd.DataFrame()
