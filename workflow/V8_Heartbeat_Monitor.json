@@ -1,0 +1,156 @@
+{
+    "name": "V8.0 心跳监控工作流",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "hours",
+                            "hoursInterval": 1
+                        }
+                    ]
+                }
+            },
+            "id": "heartbeat-trigger",
+            "name": "每小时心跳 (可改为每日09:00)",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.2,
+            "position": [
+                200,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "={{ $env.AKSHARE_API_URL }}/health",
+                "options": {
+                    "timeout": 30000
+                }
+            },
+            "id": "health-check",
+            "name": "调用 /health 端点",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                420,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    },
+                    "conditions": [
+                        {
+                            "id": "status-check",
+                            "leftValue": "={{ $json.status }}",
+                            "rightValue": "healthy",
+                            "operator": {
+                                "type": "string",
+                                "operation": "notEquals"
+                            }
+                        }
+                    ],
+                    "combinator": "or"
+                },
+                "options": {}
+            },
+            "id": "check-status",
+            "name": "检查状态是否异常",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                640,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "={{ $env.FEISHU_WEBHOOK_URL }}",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"msg_type\": \"interactive\",\n  \"card\": {\n    \"header\": {\n      \"title\": {\n        \"tag\": \"plain_text\",\n        \"content\": \"🔴 系统健康警报\"\n      },\n      \"template\": \"red\"\n    },\n    \"elements\": [\n      {\n        \"tag\": \"div\",\n        \"text\": {\n          \"tag\": \"lark_md\",\n          \"content\": \"**状态**: {{ $json.status }}\\n**时间**: {{ $json.timestamp }}\\n**延迟**: {{ $json.latency_ms }}ms\"\n        }\n      },\n      {\n        \"tag\": \"div\",\n        \"text\": {\n          \"tag\": \"lark_md\",\n          \"content\": \"**熔断器**: 错误次数 {{ $json.checks.circuit_breaker.error_count }}\\n**已触发**: {{ $json.checks.circuit_breaker.is_open }}\"\n        }\n      },\n      {\n        \"tag\": \"hr\"\n      },\n      {\n        \"tag\": \"div\",\n        \"text\": {\n          \"tag\": \"lark_md\",\n          \"content\": \"⚠️ 请立即检查 API 服务状态\"\n        }\n      }\n    ]\n  }\n}",
+                "options": {}
+            },
+            "id": "send-alert",
+            "name": "发送飞书告警",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                860,
+                200
+            ]
+        },
+        {
+            "parameters": {},
+            "id": "no-action",
+            "name": "正常 - 无操作",
+            "type": "n8n-nodes-base.noOp",
+            "typeVersion": 1,
+            "position": [
+                860,
+                400
+            ]
+        }
+    ],
+    "connections": {
+        "每小时心跳 (可改为每日09:00)": {
+            "main": [
+                [
+                    {
+                        "node": "调用 /health 端点",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "调用 /health 端点": {
+            "main": [
+                [
+                    {
+                        "node": "检查状态是否异常",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "检查状态是否异常": {
+            "main": [
+                [
+                    {
+                        "node": "发送飞书告警",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "正常 - 无操作",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "meta": {
+        "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "v8.0-heartbeat-v1",
+    "triggerCount": 0,
+    "tags": []
+}

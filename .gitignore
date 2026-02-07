@@ -10,8 +10,9 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# n8n Workflow Files (excluded from version control)
-workflow/*.json
+# n8n Workflow Files (exclude main stock workflows, keep monitoring workflows)
+workflow/AH*.json
+!workflow/V8_*.json
 
 # IDE
 .idea/
