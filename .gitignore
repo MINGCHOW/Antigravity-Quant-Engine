@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# n8n Workflow Files (excluded from version control)
+AH Stock*.json
+AH_Stock*.json
+*.workflow.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+temp_*/
+*.tmp
+*.bak
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
