@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # 复制源代码
-COPY akshare_api.py .
+COPY api/akshare_api.py .
 
 # 暴露端口
 EXPOSE 8080

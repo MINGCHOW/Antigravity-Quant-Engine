@@ -11,9 +11,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # n8n Workflow Files (excluded from version control)
-AH Stock*.json
-AH_Stock*.json
-*.workflow.json
+workflow/*.json
 
 # IDE
 .idea/
