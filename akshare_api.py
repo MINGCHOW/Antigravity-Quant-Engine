@@ -112,8 +112,9 @@ class DataFetcher:
             # 4. Standardize Date (TZ-Naive)
             df['date'] = pd.to_datetime(df['date'], errors='coerce')
             df.dropna(subset=['date'], inplace=True)
-            if df['date'].dt.tz is not None:
-                df['date'] = df['date'].dt.tz_localize(None)
+            # Properly strip timezone if present (Yahoo returns tz-aware)
+            if hasattr(df['date'].dt, 'tz') and df['date'].dt.tz is not None:
+                df['date'] = df['date'].dt.tz_convert(None)  # Convert to UTC then remove TZ
             
             # 5. Deduplicate and Sort
             df.drop_duplicates(subset=['date'], keep='last', inplace=True)
@@ -323,9 +324,12 @@ class DataFetcher:
                     qt_data = data['data'][tencent_code]
                     if 'day' in qt_data:
                         k_data = qt_data['day']
-                        df = pd.DataFrame(k_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'unknown'])
-                        df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
-                        return DataFetcher._clean_data(df)
+                        # Dynamic parsing: HK returns 6 columns (date, open, close, high, low, volume)
+                        df = pd.DataFrame(k_data)
+                        if df.shape[1] >= 6:
+                            df = df.iloc[:, :6]
+                            df.columns = ['date', 'open', 'close', 'high', 'low', 'volume']
+                            return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.warning(f"Tencent HK failed: {e}")
 
