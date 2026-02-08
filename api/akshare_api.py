@@ -408,6 +408,67 @@ class DataFetcher:
             logger.error(f"Critical HK Fetch Error: {e}")
             return pd.DataFrame()
 
+# --- V9.4: Stock Name & ETF Detection ---
+def get_stock_name(code: str, market: str = "CN") -> str:
+    """
+    获取股票真实名称
+    """
+    try:
+        clean_code = str(code).strip().upper().replace("HK", "").replace("SH", "").replace("SZ", "")
+        
+        if market == "HK":
+            # 港股：尝试从 AkShare 获取
+            try:
+                symbol = f"{int(clean_code):05d}"
+                df = ak.stock_hk_spot_em()
+                if not df.empty:
+                    match = df[df['代码'] == symbol]
+                    if not match.empty:
+                        return match.iloc[0]['名称']
+            except Exception as e:
+                logger.debug(f"HK name fetch failed: {e}")
+            
+            # 备用：返回格式化代码
+            return f"{int(clean_code):05d}.HK"
+        else:
+            # A股：尝试从 AkShare 获取
+            try:
+                df = ak.stock_zh_a_spot_em()
+                if not df.empty:
+                    match = df[df['代码'] == clean_code]
+                    if not match.empty:
+                        return match.iloc[0]['名称']
+            except Exception as e:
+                logger.debug(f"A-share name fetch failed: {e}")
+            
+            # 备用：返回代码
+            return clean_code
+    except Exception as e:
+        logger.warning(f"get_stock_name error: {e}")
+        return code
+
+def detect_etf(code: str, market: str = "CN") -> bool:
+    """
+    检测是否为 ETF
+    """
+    clean_code = str(code).strip().upper().replace("HK", "").replace("SH", "").replace("SZ", "")
+    
+    if market == "HK":
+        # 港股 ETF 代码规则：
+        # 0xxxx, 1xxxx, 5xxxx 开头通常是 ETF
+        # 补零处理：2824 -> 02824
+        if clean_code.isdigit():
+            padded = f"{int(clean_code):05d}"
+            return padded.startswith('0') or padded.startswith('1') or padded.startswith('5')
+    else:
+        # A股 ETF 代码规则：
+        # 51xxxx (上证 ETF), 15xxxx/16xxxx (深证 ETF)
+        return (clean_code.startswith('51') or 
+                clean_code.startswith('15') or 
+                clean_code.startswith('16'))
+    
+    return False
+
 # --- Quant Logic (V8.6 Global NaN Protection) ---
 def safe_round(val, decimals=2):
     try:
@@ -699,11 +760,16 @@ def analyze_full(req: AnalyzeRequest):
             
         if suggested_shares < 100: suggested_shares = 0
         
+        # V9.4: Get real stock name and ETF status
+        stock_name = get_stock_name(code, market)
+        is_etf = detect_etf(code, market)
+        
         return {
             "date": datetime.datetime.now().strftime("%Y-%m-%d"),
             "market": market,
             "code": code,
-            "name": code, 
+            "name": stock_name,
+            "is_etf": is_etf,
             "signal_type": sig['signal'],
             "trend_score": sig['trend_score'],
             "current_price": tech['current_price'],
