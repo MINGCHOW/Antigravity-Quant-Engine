@@ -10,6 +10,9 @@
               "expression": "40 16 * * 1-5"
             }
           ]
+        },
+        "options": {
+          "timezone": "Asia/Shanghai"
         }
       },
       "id": "75963dc7-7b04-46eb-9ad9-ab174c12b102",
