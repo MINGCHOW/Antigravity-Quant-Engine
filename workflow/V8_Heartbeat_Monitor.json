@@ -6,14 +6,14 @@
                 "rule": {
                     "interval": [
                         {
-                            "field": "hours",
-                            "hoursInterval": 1
+                            "field": "cronExpression",
+                            "expression": "10 9 * * 1-5"
                         }
                     ]
                 }
             },
             "id": "55eff146-43cc-4116-9834-ae202706431a",
-            "name": "每小时心跳 (可改为每日09:00)",
+            "name": "每日09:10触发 (工作日开盘前)",
             "type": "n8n-nodes-base.scheduleTrigger",
             "typeVersion": 1.2,
             "position": [

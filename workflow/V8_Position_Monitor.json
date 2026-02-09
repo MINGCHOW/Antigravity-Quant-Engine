@@ -7,13 +7,13 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "10 15 * * 1-5"
+              "expression": "40 16 * * 1-5"
             }
           ]
         }
       },
       "id": "75963dc7-7b04-46eb-9ad9-ab174c12b102",
-      "name": "每日15:10触发 (工作日)",
+      "name": "每日16:40触发 (工作日港股收盘后)",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
