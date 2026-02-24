@@ -47,10 +47,12 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AkShare Quant API V10.0", version="10.0")
+app = FastAPI(title="AkShare Quant API V14.0", version="14.0")
 
 # --- V10.0: API Key Authentication ---
-API_KEY = os.environ.get("API_KEY")
+API_KEY = os.environ.get("API_KEY")
+if not API_KEY:
+    logger.warning("⚠️ API_KEY not set! All non-public endpoints will reject requests.")
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/health/reset"}
 
 @app.middleware("http")
@@ -59,7 +61,7 @@ async def verify_api_key(request: Request, call_next):
         return await call_next(request)
     
     api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    if api_key != API_KEY:
+    if not API_KEY or api_key != API_KEY:
         return JSONResponse(status_code=401, content={"detail": "Invalid or missing API Key"})
     
     return await call_next(request)
@@ -117,6 +119,7 @@ class PositionCheckRequest(BaseModel):
 
 class SignalItem(BaseModel):
     code: str
+    market: str = "CN"  # V14: Consistent with PositionItem
     signal_date: str
     entry_price: float
     stop_loss: float
@@ -177,7 +180,7 @@ def health_check():
         "timestamp": datetime.datetime.now().isoformat(),
         "latency_ms": latency_ms,
         "checks": checks,
-        "version": "10.0"
+        "version": "14.0"
     }
 
 @app.post("/health/reset")
@@ -219,7 +222,13 @@ def get_market_context():
             if not hk_df.empty:
                 hk_price = float(hk_df['收盘'].iloc[-1])
                 hk_ma20 = float(hk_df['收盘'].rolling(20).mean().iloc[-1])
-                hk_status = "Bull" if hk_price > hk_ma20 else "Bear"
+                # V14: Buffer zone for HK (±3% due to higher volatility)
+                if hk_price > hk_ma20 * 1.03:
+                    hk_status = "Bull"
+                elif hk_price < hk_ma20 * 0.97:
+                    hk_status = "Bear"
+                else:
+                    hk_status = "Neutral"
         except Exception as e:
             logger.warning(f"HK index (Method 1) failed: {e}")
             try:
@@ -343,7 +352,8 @@ def analyze_full(req: AnalyzeRequest):
             "code": code,
             "name": stock_name,
             "is_etf": is_etf,
-            "data_source": DataFetcher._last_source,
+            "data_source": DataFetcher._last_source,
+
             "signal_type": sig['signal'],
             "trend_score": sig['trend_score'],
             "current_price": tech['current_price'],
@@ -495,7 +505,8 @@ def settle_signals(req: SignalSettleRequest):
         
         try:
             code = sig.code
-            is_hk = len(str(code)) == 5
+            # V14: Consistent market detection with check_positions
+            is_hk = len(str(code)) == 5 or sig.market.upper() == "HK"
             
             if is_hk:
                 df = DataFetcher.get_hk_share_history(code)
@@ -528,6 +539,9 @@ def settle_signals(req: SignalSettleRequest):
             except:
                 days_held = 0
             
+            # V14: Calculate timeout before evaluation chain
+            timeout_days = 30 if is_hk else 20
+            
             if current_price >= target:
                 result = "成功 ✅"
                 pnl = (target - entry) / entry * 100
@@ -536,9 +550,7 @@ def settle_signals(req: SignalSettleRequest):
                 result = "失败 ❌"
                 pnl = (stop - entry) / entry * 100
                 action = "SETTLED"
-            # V13: Dynamic timeout based on market type
-            timeout_days = 30 if is_hk else 20
-            if days_held > timeout_days:
+            elif days_held > timeout_days:
                 result = "超时 ⏰"
                 pnl = (current_price - entry) / entry * 100
                 action = "SETTLED"

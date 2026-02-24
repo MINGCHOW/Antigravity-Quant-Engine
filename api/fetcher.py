@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V10.0 Data Fetcher Module
+V14.0 Data Fetcher Module
 8-Layer Fallback for A-Share + 4-Layer for HK
 """
 import pandas as pd
@@ -153,6 +153,7 @@ class DataFetcher:
              if not df.empty and len(df) > 30:
                  df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
                                     '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+                 DataFetcher._last_source = "AkShare"
                  return DataFetcher._clean_data(df)
         except Exception as e:
              logger.warning(f"AkShare failed: {e}")
@@ -194,33 +195,55 @@ class DataFetcher:
                     
                     df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
                                        '最高': 'high', '最低': 'low', '成交量': 'volume', '成交': 'volume'}, inplace=True)
-                    
+                    DataFetcher._last_source = "Qstock"
                     return DataFetcher._clean_data(df[['date', 'open', 'close', 'high', 'low', 'volume']])
             except Exception as e:
                 logger.warning(f"Qstock failed: {e}")
 
-        # 4. Pytdx (TCP) - Multi-Server Failover
-        TDX_SERVERS = [
-            ('119.147.212.81', 7709),
-            ('114.80.63.12', 7709),
-            ('218.75.126.9', 7709),
-        ]
-        for tdx_host, tdx_port in TDX_SERVERS:
-            try:
-                from pytdx.hq import TdxHq_API
-                local_tdx = TdxHq_API()
-                logger.info(f"Attempting Pytdx (#4 TCP) {tdx_host}...")
-                with local_tdx.connect(tdx_host, tdx_port):
-                    market_code = 1 if code.startswith("6") else 0
-                    data = local_tdx.get_security_bars(9, market_code, symbol, 0, 100)
-                    if data:
-                        df = local_tdx.to_df(data)
-                        df.rename(columns={'datetime': 'date', 'vol': 'volume'}, inplace=True)
-                        DataFetcher._last_source = f"Pytdx({tdx_host})"
-                        return DataFetcher._clean_data(df[['date', 'open', 'close', 'high', 'low', 'volume']])
-            except Exception as e:
-                logger.warning(f"Pytdx {tdx_host} failed: {e}")
-                continue
+        # 4. Pytdx (TCP) - Multi-Server Failover
+
+        TDX_SERVERS = [
+
+            ('119.147.212.81', 7709),
+
+            ('114.80.63.12', 7709),
+
+            ('218.75.126.9', 7709),
+
+        ]
+
+        for tdx_host, tdx_port in TDX_SERVERS:
+
+            try:
+
+                from pytdx.hq import TdxHq_API
+
+                local_tdx = TdxHq_API()
+
+                logger.info(f"Attempting Pytdx (#4 TCP) {tdx_host}...")
+
+                with local_tdx.connect(tdx_host, tdx_port):
+
+                    market_code = 1 if code.startswith("6") else 0
+
+                    data = local_tdx.get_security_bars(9, market_code, symbol, 0, 100)
+
+                    if data:
+
+                        df = local_tdx.to_df(data)
+
+                        df.rename(columns={'datetime': 'date', 'vol': 'volume'}, inplace=True)
+
+                        DataFetcher._last_source = f"Pytdx({tdx_host})"
+
+                        return DataFetcher._clean_data(df[['date', 'open', 'close', 'high', 'low', 'volume']])
+
+            except Exception as e:
+
+                logger.warning(f"Pytdx {tdx_host} failed: {e}")
+
+                continue
+
 
         # 5. Baostock (Official)
         if bs:
@@ -240,9 +263,11 @@ class DataFetcher:
                     data_list.append(rs.get_row_data())
                 
                 bs.logout()
+                _bs_logged_in = False  # V14: Reset login flag after logout
                 
                 if data_list:
                     df = pd.DataFrame(data_list, columns=rs.fields)
+                    DataFetcher._last_source = "Baostock"
                     return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.error(f"Baostock failed: {e}")
@@ -253,6 +278,7 @@ class DataFetcher:
             sina_symbol = f"{market_prefix}{symbol}"
             df = ak.stock_zh_a_daily(symbol=sina_symbol, adjust="qfq")
             if not df.empty:
+                DataFetcher._last_source = "Sina"
                 return DataFetcher._clean_data(df)
         except Exception as e:
             logger.error(f"Sina failed: {e}")
@@ -296,6 +322,7 @@ class DataFetcher:
                 if not df.empty:
                     df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', 
                                        '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+                    DataFetcher._last_source = "AkShare-HK"
                     return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.warning(f"AkShare HK failed for {code}: {e}")
@@ -304,7 +331,7 @@ class DataFetcher:
             try:
                 logger.info(f"Attempting Tencent HK (#2) for {code}...")
                 tencent_code = f"hk{symbol}"
-                url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={tencent_code},day,,,320,qfq" 
+                url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={tencent_code},day,,,320,qfq"  # V14: HTTPS 
                 r = requests.get(url, headers=get_headers(), timeout=8)
                 data = r.json()
                 if data and 'data' in data and tencent_code in data['data']:
@@ -315,6 +342,7 @@ class DataFetcher:
                         if df.shape[1] >= 6:
                             df = df.iloc[:, :6]
                             df.columns = ['date', 'open', 'close', 'high', 'low', 'volume']
+                            DataFetcher._last_source = "Tencent-HK"
                             return DataFetcher._clean_data(df)
             except Exception as e:
                 logger.warning(f"Tencent HK failed: {e}")
@@ -331,6 +359,7 @@ class DataFetcher:
                         df.rename(columns={'Date': 'date', 'Open': 'open', 'Close': 'close', 
                                            'High': 'high', 'Low': 'low', 'Volume': 'volume'}, inplace=True)
                         df['date'] = df['date'].dt.tz_localize(None)
+                        DataFetcher._last_source = "Yahoo-HK"
                         return DataFetcher._clean_data(df)
                 except Exception as e:
                     logger.warning(f"Yahoo HK failed: {e}")
@@ -357,23 +386,40 @@ class DataFetcher:
             now = time.time()
             cache = DataFetcher._spot_cache[market]
             
-            # V13: Thread-safe cache refresh (double-checked locking)
-            if cache["data"].empty or (now - cache["time"] > 30):
-                with DataFetcher._spot_lock:
-                    cache = DataFetcher._spot_cache[market]
-                    if cache["data"].empty or (now - cache["time"] > 30):
-                        if market == "HK":
-                             df = ak.stock_hk_spot_em()
-                        else:
-                             df = ak.stock_zh_a_spot_em()
-                        
-                        if not df.empty:
-                            if '代码' in df.columns and '最新价' in df.columns:
-                                 df['代码'] = df['代码'].astype(str)
-                                 if market == "HK":
-                                     df['代码'] = df['代码'].apply(lambda x: f"{int(x):05d}" if x.isdigit() else x)
-                                 cache["data"] = df.set_index('代码')
-                                 cache["time"] = now
+            # V13: Thread-safe cache refresh (double-checked locking)
+
+            if cache["data"].empty or (now - cache["time"] > 30):
+
+                with DataFetcher._spot_lock:
+
+                    cache = DataFetcher._spot_cache[market]
+
+                    if cache["data"].empty or (now - cache["time"] > 30):
+
+                        if market == "HK":
+
+                             df = ak.stock_hk_spot_em()
+
+                        else:
+
+                             df = ak.stock_zh_a_spot_em()
+
+                        
+
+                        if not df.empty:
+
+                            if '代码' in df.columns and '最新价' in df.columns:
+
+                                 df['代码'] = df['代码'].astype(str)
+
+                                 if market == "HK":
+
+                                     df['代码'] = df['代码'].apply(lambda x: f"{int(x):05d}" if x.isdigit() else x)
+
+                                 cache["data"] = df.set_index('代码')
+
+                                 cache["time"] = now
+
             
             # Lookup
             df = cache["data"]
