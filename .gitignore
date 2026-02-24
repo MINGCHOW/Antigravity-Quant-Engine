@@ -42,3 +42,9 @@ docs/*_internal.md
 
 # n8n Workflow Files (contain API keys, credentials, user IDs — NEVER push)
 workflow/*.json
+
+# Debug scripts (local only)
+debug_data.py
+verify_v10_fixes.py
+restore_files.py
+v13_patch.py
