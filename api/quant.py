@@ -150,12 +150,13 @@ def calculate_technicals(df: pd.DataFrame):
             macd_cross = "death"   # 死叉
     
     recent_lows = lows.tail(20).min()
-    # Safe Support/Resistance
-    support_level = min(recent_lows, ma20) if not pd.isna(ma20) else recent_lows
+    # V13: Support = take NEARER (higher) value for tighter stop loss
+    support_level = max(recent_lows, ma20) if not pd.isna(ma20) else recent_lows
     
     recent_highs = highs.tail(20).max()
-    res_list = [x for x in [recent_highs, ma5, ma10] if not pd.isna(x)]
-    resistance_level = max(res_list) if res_list else current_price * 1.1
+    # V13: Resistance = nearest level ABOVE current price
+    res_list = [x for x in [recent_highs, ma5, ma10] if not pd.isna(x) and x > current_price]
+    resistance_level = min(res_list) if res_list else current_price * 1.05
     
     return {
         "current_price": safe_round(current_price),

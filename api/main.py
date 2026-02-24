@@ -99,6 +99,7 @@ def record_success():
 # --- Models ---
 class AnalyzeRequest(BaseModel):
     code: str
+    market: str = ""  # V13: Optional explicit market ("CN"/"HK"), auto-detect if empty
     balance: float = 100000.0
     risk: float = 0.01
 
@@ -199,7 +200,13 @@ def get_market_context():
             raise ValueError("Index Data Empty")
         price = float(index_df['close'].iloc[-1])
         ma20 = float(index_df['close'].rolling(20).mean().iloc[-1])
-        cn_status = "Bull" if price > ma20 else "Bear"
+        # V13: Buffer zone to prevent whipsaw (±2%)
+        if price > ma20 * 1.02:
+            cn_status = "Bull"
+        elif price < ma20 * 0.98:
+            cn_status = "Bear"
+        else:
+            cn_status = "Neutral"
         
         # V10.0: 港股市场判断 (恒生指数)
         # 优先使用 index_zh_a_hist (稳定)，备用 stock_hk_index_daily_em (易超时)
@@ -288,13 +295,18 @@ def get_market_context():
 def analyze_full(req: AnalyzeRequest):
     try:
         code = req.code
-        is_hk = len(str(code)) == 5
+        # V13: Explicit market param takes priority over auto-detection
+        if req.market and req.market.upper() in ("HK", "CN"):
+            market = req.market.upper()
+            is_hk = (market == "HK")
+        else:
+            is_hk = len(str(code)) == 5
+            market = "HK" if is_hk else "CN"
+        
         if is_hk:
             df = DataFetcher.get_hk_share_history(code)
-            market = "HK"
         else:
             df = DataFetcher.get_a_share_history(code)
-            market = "CN"
             
         if df.empty:
             raise ValueError("No data found")
@@ -500,6 +512,12 @@ def settle_signals(req: SignalSettleRequest):
                 continue
             
             current_price = float(df['close'].iloc[-1])
+            
+            # V13: Use realtime price if available (same as check_positions)
+            realtime_price = DataFetcher.get_realtime_price(code, "HK" if is_hk else "CN")
+            if realtime_price > 0:
+                current_price = realtime_price
+            
             entry = sig.entry_price
             stop = sig.stop_loss
             target = sig.take_profit

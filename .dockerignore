@@ -1,0 +1,24 @@
+# Debug and test files
+debug_data.py
+verify_v10_fixes.py
+tests/
+
+# Workflow templates (contain API keys)
+workflow/*_template.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# OS
+*.DS_Store
+Thumbs.db
