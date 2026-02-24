@@ -136,11 +136,12 @@ def health_check():
     checks = {}
     overall_status = "healthy"
     
-    # 1. 数据源检查
+    # 1. V12: 轻量级数据源检查 (Spot API only, no 8-layer history)
     try:
-        test_df = DataFetcher.get_a_share_history("000001")
+        import akshare as ak
+        test_df = ak.stock_zh_a_spot_em()
         if test_df.empty:
-            checks["data_source"] = {"status": "warning", "message": "Empty data returned"}
+            checks["data_source"] = {"status": "warning", "message": "Spot API returned empty"}
             overall_status = "degraded"
         else:
             checks["data_source"] = {"status": "ok", "rows": len(test_df)}
@@ -408,22 +409,27 @@ def check_positions(req: PositionCheckRequest):
             if realtime_price > 0:
                 current_price = realtime_price
             
+            # V12: Fixed variable references (was using undefined names)
+            buy_price = pos.buy_price
+            current_stop = pos.current_stop
+            target = pos.target_price
+            
             if current_stop > 0 and current_price <= current_stop:
                 action = "SELL_STOP"
                 reason = f"🔴 触发止损 (现价 {current_price:.2f} ≤ 止损 {current_stop:.2f})"
-                pnl = (current_price - buy_price) / buy_price * 100
+                pnl = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
                 new_stop = None
             elif target > 0 and current_price >= target:
                 action = "SELL_TARGET"
                 reason = f"🟢 触发止盈 (现价 {current_price:.2f} ≥ 目标 {target:.2f})"
-                pnl = (current_price - buy_price) / buy_price * 100
+                pnl = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
                 new_stop = None
             else:
                 action = "HOLD"
                 # V10.0: ATR 驱动移动止损
                 atr_multiplier = 2.5 if is_hk else 2.0
                 trailing_stop = current_price - (atr_multiplier * atr)
-                min_trailing = buy_price * 0.93
+                min_trailing = buy_price * 0.93 if buy_price > 0 else trailing_stop
                 trailing_stop = max(trailing_stop, min_trailing)
                 
                 new_stop = max(current_stop, trailing_stop) if current_stop > 0 else trailing_stop
@@ -433,7 +439,7 @@ def check_positions(req: PositionCheckRequest):
                 else:
                     reason = f"继续持有 (现价 {current_price:.2f})"
                 
-                pnl = (current_price - buy_price) / buy_price * 100
+                pnl = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
 
             shares = pos.shares if pos.shares > 0 else 0
             pnl_amount = (current_price - buy_price) * shares if shares > 0 else 0

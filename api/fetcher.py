@@ -370,24 +370,24 @@ class DataFetcher:
         except Exception as e:
             logger.warning(f"AkShare Spot fetch failed for {code}: {e}")
         
-        # --- V10.2: Yahoo Finance Fallback (HK Only) ---
-        if market == "HK" and yf:
+        # --- V12: Yahoo Finance Fallback (HK + CN) ---
+        if yf:
             try:
-                # Yahoo requires .HK suffix and 4-digit code usually? No, 0700.HK
-                # AkShare uses 00700. Yahoo uses 0700.HK or 00700.HK
                 clean_code = str(code).strip()
-                if clean_code.isdigit():
-                    yf_code = f"{int(clean_code):04d}.HK"
+                if market == "HK":
+                    yf_code = f"{int(clean_code):04d}.HK" if clean_code.isdigit() else clean_code
+                elif market == "CN":
+                    if clean_code.startswith("6"): yf_code = f"{clean_code}.SS"
+                    elif clean_code.startswith(("0", "3")): yf_code = f"{clean_code}.SZ"
+                    else: yf_code = f"{clean_code}.SS"
                 else:
                     yf_code = clean_code
                 
                 ticker = yf.Ticker(yf_code)
-                # Try fast_info (newer yfinance)
                 try:
                     price = ticker.fast_info['last_price']
                     if price and price > 0: return float(price)
                 except:
-                    # Fallback to history
                     hist = ticker.history(period="1d")
                     if not hist.empty:
                         return float(hist['Close'].iloc[-1])
@@ -416,23 +416,37 @@ class DataFetcher:
         except Exception:
             pass
         
-        # --- V10.2 YFinance Name Fallback ---
+        # --- V12: AkShare Lightweight Name Lookup (Chinese names) ---
+        if market == "CN":
+            try:
+                clean_code = str(code).strip().upper().replace("SH","").replace("SZ","")
+                name_df = ak.stock_info_a_code_name()
+                if not name_df.empty:
+                    # Normalize column names
+                    name_df.columns = [str(c).strip().lower() for c in name_df.columns]
+                    code_col = 'code' if 'code' in name_df.columns else name_df.columns[0]
+                    name_col = 'name' if 'name' in name_df.columns else name_df.columns[1]
+                    name_df[code_col] = name_df[code_col].astype(str).str.strip()
+                    match = name_df[name_df[code_col] == clean_code]
+                    if not match.empty:
+                        return str(match.iloc[0][name_col])
+            except Exception as e:
+                logger.warning(f"AkShare name lookup failed: {e}")
+        
+        # --- V10.2 YFinance Name Fallback (Last Resort) ---
         if yf:
             try:
                 clean_code = str(code).strip()
                 yf_code = code
                 
-                # Format Ticker
                 if market == "HK":
                     yf_code = f"{int(clean_code):04d}.HK" if clean_code.isdigit() else clean_code
                 elif market == "CN":
-                     # Auto detect suffix
                      if clean_code.startswith("6"): yf_code = f"{clean_code}.SS"
                      elif clean_code.startswith(("0", "3")): yf_code = f"{clean_code}.SZ"
                      elif clean_code.startswith(("4", "8")): yf_code = f"{clean_code}.BJ"
 
                 ticker = yf.Ticker(yf_code)
-                # Note: Yahoo names are English usually, but better than code
                 name = ticker.info.get('shortName') or ticker.info.get('longName')
                 if name: return name
             except:
