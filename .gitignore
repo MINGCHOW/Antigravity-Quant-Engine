@@ -39,5 +39,6 @@ logs/
 # Sensitive Documentation (local only, DO NOT push to GitHub)
 docs/MAINTENANCE.md
 docs/*_internal.md
+
+# n8n Workflow Files (contain API keys, credentials, user IDs — NEVER push)
 workflow/*.json
-!workflow/*_template.json
