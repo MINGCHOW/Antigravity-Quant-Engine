@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="AkShare Quant API V10.0", version="10.0")
 
 # --- V10.0: API Key Authentication ---
-API_KEY = os.environ.get("API_KEY", "aqe-k8x7m2pQ9vR4wL6nJ3sY5tB1")
+API_KEY = os.environ.get("API_KEY")
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/health/reset"}
 
 @app.middleware("http")
@@ -343,7 +343,7 @@ def analyze_full(req: AnalyzeRequest):
             "code": code,
             "name": stock_name,
             "is_etf": is_etf,
-            "data_source": "AkShare",
+            "data_source": DataFetcher._last_source,
             "signal_type": sig['signal'],
             "trend_score": sig['trend_score'],
             "current_price": tech['current_price'],
@@ -536,7 +536,9 @@ def settle_signals(req: SignalSettleRequest):
                 result = "失败 ❌"
                 pnl = (stop - entry) / entry * 100
                 action = "SETTLED"
-            elif days_held > 20:
+            # V13: Dynamic timeout based on market type
+            timeout_days = 30 if is_hk else 20
+            if days_held > timeout_days:
                 result = "超时 ⏰"
                 pnl = (current_price - entry) / entry * 100
                 action = "SETTLED"

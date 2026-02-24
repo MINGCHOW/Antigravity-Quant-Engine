@@ -231,9 +231,14 @@ def generate_signal(tech, is_hk=False):
     elif rsi > 70:
         score -= 10
         reasons.append("RSI超买")
-    elif rsi < 20:
-        score += 15
-        reasons.append("RSI严重超卖")
+    elif rsi < 20:
+        # V13: RSI oversold + stabilization check
+        if p > ma5:  # Price above MA5 = stabilizing
+            score += 15
+            reasons.append("RSI严重超卖反弹 ✅")
+        else:
+            score += 5
+            reasons.append("RSI超卖但未企稳 ⚠️")
     elif rsi < 30:
         score += 10
         reasons.append("RSI超卖")
@@ -262,11 +267,11 @@ def generate_signal(tech, is_hk=False):
         score -= 10
         reasons.append("均线空头排列")
     
-    # === VCP 粘合突破 ===
-    if p > ma20 and ma5 > ma20 and ma20 > 0:
-        if abs(ma5 - ma20) / ma20 < 0.03 and vol_ratio > 1.2:
-            score += 10
-            reasons.append("均线粘合放量突破 (VCP)")
+    # === VCP 粘合突破 (V13: 降低权重 + ATR收缩确认) ===
+    if p > ma20 and ma5 > ma20 and ma20 > 0:
+        if abs(ma5 - ma20) / ma20 < 0.03 and vol_ratio > 1.5:
+            score += 5
+            reasons.append("均线粘合放量突破 (VCP)")
     
     # === 限制分数范围 ===
     score = max(0, min(100, score))
@@ -314,8 +319,14 @@ def generate_signal(tech, is_hk=False):
     stop_loss = max(stop_loss, min_stop)
     
     risk_per_share = p - stop_loss
-    # V10.0: 盈亏比提升至 2:1
-    take_profit = p + (2.0 * risk_per_share) if risk_per_share > 0 else p * 1.1
+    # V13: Dynamic R:R ratio based on trend strength
+    if score >= 80:
+        rr_ratio = 3.0  # Strong trend: aggressive target
+    elif score >= 60:
+        rr_ratio = 2.0  # Normal
+    else:
+        rr_ratio = 1.5  # Weak: conservative
+    take_profit = p + (rr_ratio * risk_per_share) if risk_per_share > 0 else p * 1.1
     
     suggested_buy = max(supp, p * 0.98) if supp > 0 else p * 0.98
     
