@@ -469,6 +469,8 @@ def check_positions(req: PositionCheckRequest):
             results.append({
                 "code": code,
                 "current_price": safe_round(current_price),
+                "buy_price": safe_round(buy_price),
+                "target_price": safe_round(target) if target > 0 else None,
                 "action": action,
                 "reason": reason,
                 "pnl_percent": safe_round(pnl),
