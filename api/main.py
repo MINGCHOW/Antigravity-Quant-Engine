@@ -134,28 +134,15 @@ class SignalSettleRequest(BaseModel):
 @app.get("/health")
 def health_check():
     """
-    V10.0: 系统健康检查
+    V14.1: 轻量级健康检查 (无外部 API 调用)
+    - healthy: 熔断器正常
+    - critical: 熔断器已打开
     """
     start_time = time.time()
     checks = {}
     overall_status = "healthy"
     
-    # 1. V12: 轻量级数据源检查 (Spot API only, no 8-layer history)
-    try:
-        import akshare as ak
-        test_df = ak.stock_zh_a_spot_em()
-        if test_df.empty:
-            checks["data_source"] = {"status": "warning", "message": "Spot API returned empty"}
-            overall_status = "degraded"
-        else:
-            checks["data_source"] = {"status": "ok", "rows": len(test_df)}
-            record_success()
-    except Exception as e:
-        checks["data_source"] = {"status": "error", "message": str(e)}
-        overall_status = "degraded"
-        record_error(str(e))
-    
-    # 2. 熔断器状态
+    # 1. 熔断器状态 (最重要的指标)
     checks["circuit_breaker"] = {
         "error_count": error_counter["count"],
         "is_open": error_counter["circuit_open"],
@@ -164,7 +151,7 @@ def health_check():
     if error_counter["circuit_open"]:
         overall_status = "critical"
     
-    # 3. 可选库检查
+    # 2. 可选库检查
     checks["optional_libs"] = {
         "efinance": ef is not None,
         "yfinance": yf is not None,
@@ -180,7 +167,7 @@ def health_check():
         "timestamp": datetime.datetime.now().isoformat(),
         "latency_ms": latency_ms,
         "checks": checks,
-        "version": "14.0"
+        "version": "14.1"
     }
 
 @app.post("/health/reset")
