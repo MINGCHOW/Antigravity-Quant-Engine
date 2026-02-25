@@ -1,36 +1,56 @@
 # Antigravity Quant Engine
 
-> **AI-Powered Quantitative Trading Engine** — A-Share + HK Stock Multi-Source Analysis
+> **AI-Powered Stock Analysis & Position Management** — A-Share + HK Market
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109-green)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104%2B-green)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## 🚀 Core Features
+## Overview
 
-- **8-Layer Data Shield** — efinance → AkShare → Tencent → Qstock → Pytdx → Baostock → Sina → Yahoo Finance
-- **Cross-Market** — Full A-Share + HK Stock support with anti-scraping (dynamic UA, circuit breaker)
-- **Quant Engine** — MA/EMA/RSI/ATR/MACD/BIAS + symmetric 5-level signals + ATR-driven dynamic stop-loss/take-profit
-- **Market Radar** — Bull/Neutral/Bear detection with buffer zones (CN ±2%, HK ±3%)
-- **n8n Workflows** — Daily AI analysis (Gemini) → Feishu alerts, position monitoring, heartbeat
+Quantitative analysis engine with multi-source data fetching, technical indicator computation, and automated n8n workflows for daily stock analysis, position monitoring, and signal settlement.
 
-## 📂 Structure
+## Architecture
 
 ```
 api/
-├── main.py          # FastAPI (5 endpoints)
-├── fetcher.py       # 8-Layer data + spot cache + name resolver
-├── quant.py         # Technicals, signals, ETF detection
-└── __init__.py
-workflow/            # n8n workflows (gitignored, contains credentials)
-tests/test_quant.py  # Unit tests (9 tests)
-Dockerfile           # Cloud deployment
+├── main.py       # FastAPI — 5 endpoints (analyze, positions, signals, market, health)
+├── fetcher.py    # 8-layer data fallback + realtime price + stock name resolver
+└── quant.py      # Technicals (MA/RSI/ATR/MACD/BIAS) + signal generation + risk control
+workflow/         # n8n workflows (gitignored — contains credentials)
+tests/            # Unit tests
 ```
 
-## 🛠️ Deploy
+### Data Fetch Priority
+
+`efinance → AkShare → Tencent → Qstock → Pytdx → Baostock → Sina → Yahoo Finance`
+
+Each layer is tried in order with circuit breaker protection. If a source fails repeatedly, it is temporarily disabled.
+
+## API
+
+All non-public endpoints require `X-API-Key` header.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | System health + data source availability |
+| `GET` | `/market` | CN + HK market regime (Bull / Neutral / Bear) |
+| `POST` | `/analyze_full` | Full technical analysis + signal + risk control |
+| `POST` | `/check_positions` | Position monitoring: trailing stop, take-profit, P&L |
+| `POST` | `/settle_signals` | Signal settlement: success / fail / timeout + auto-writeback |
+
+## Workflows (n8n)
+
+| Workflow | Schedule | Function |
+|----------|----------|----------|
+| `stock_analysis` | Weekdays 16:10 | Analyze watchlist → AI summary (Gemini) → write to Feishu + notify |
+| `monitor_position` | Weekdays 16:40 | Check positions → trailing stop → P&L writeback → sell/hold alerts |
+| `monitor_position` (signal branch) | Weekdays 16:40 | Settle open signals → auto-writeback result/P&L/date to Feishu |
+| `monitor_heartbeat` | Daily 10:00 | API health check → Feishu alert on failure |
+
+## Deploy
 
 ```bash
 # Docker
@@ -42,33 +62,12 @@ pip install -r requirements.txt
 uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-## 📡 API Endpoints
-
-All non-public endpoints require `X-API-Key` header.
-
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/health` | Public | System health + circuit breaker status |
-| GET | `/market` | 🔐 | CN + HK market status (Bull/Neutral/Bear) |
-| POST | `/analyze_full` | 🔐 | Full analysis: technicals + signal + risk control |
-| POST | `/check_positions` | 🔐 | Position check: stop-loss / take-profit / trailing stop |
-| POST | `/settle_signals` | 🔐 | Signal settlement: success / fail / timeout |
-
-## 🔄 Version History
-
-| Version | Date | Key Changes |
-|---------|------|-------------|
-| V14 | 2026-02-24 | P0: settle_signals fix, HK buffer, _last_source, HTTPS, API_KEY security |
-| V13 | 2026-02-24 | Audit: support/resistance fix, bull/bear buffer, ERROR branch |
-| V12 | 2026-02-24 | Critical: check_positions NameError, lightweight health check |
-| V10 | 2026-02-10 | Modular rewrite, MACD, symmetric scoring, ATR risk control |
-
-## 🛡️ Security
+## Security
 
 - API key authentication on all sensitive endpoints
-- Workflow credentials isolated via `.gitignore` (never committed)
-- Docker build excludes debug scripts and templates
+- Workflow files gitignored (contain Feishu credentials, API keys, user IDs)
+- Docker build excludes debug scripts and workflow files
 
-## ⚖️ Disclaimer
+## Disclaimer
 
 This project is for **research and educational purposes only**. Quantitative trading involves significant financial risk.
