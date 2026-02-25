@@ -10,8 +10,8 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# n8n Workflow Files
-# All workflows are now tracked in version control
+# n8n Workflow Files (contain API keys, credentials — NEVER push)
+workflow/*.json
 
 # IDE
 .idea/
@@ -40,11 +40,8 @@ logs/
 docs/MAINTENANCE.md
 docs/*_internal.md
 
-# n8n Workflow Files (contain API keys, credentials, user IDs — NEVER push)
-workflow/*.json
-
-# Debug scripts (local only)
-debug_data.py
-verify_v10_fixes.py
-restore_files.py
-v13_patch.py
+# Debug/verification scripts (local only)
+debug_*.py
+verify_*.py
+restore_*.py
+*_patch.py
