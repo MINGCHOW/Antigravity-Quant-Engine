@@ -125,6 +125,7 @@ class SignalItem(BaseModel):
     stop_loss: float
     take_profit: float
     signal_result: str = "进行中"
+    record_id: str = ""
 
 class SignalSettleRequest(BaseModel):
     signals: list[SignalItem]
@@ -488,7 +489,8 @@ def settle_signals(req: SignalSettleRequest):
                 "code": sig.code,
                 "signal_result": sig.signal_result,
                 "action": "SKIP",
-                "reason": "已结算"
+                "reason": "已结算",
+                "record_id": sig.record_id
             })
             continue
         
@@ -507,7 +509,8 @@ def settle_signals(req: SignalSettleRequest):
                     "code": code,
                     "signal_result": "进行中",
                     "action": "ERROR",
-                    "reason": "无法获取数据"
+                    "reason": "无法获取数据",
+                    "record_id": sig.record_id
                 })
                 continue
             
@@ -548,13 +551,17 @@ def settle_signals(req: SignalSettleRequest):
                 pnl = (current_price - entry) / entry * 100
                 action = "PENDING"
             
+            settle_date = datetime.datetime.now().strftime("%Y-%m-%d") if action == "SETTLED" else None
+            
             results.append({
                 "code": code,
                 "signal_result": result,
                 "action": action,
                 "current_price": safe_round(current_price),
                 "pnl_percent": safe_round(pnl),
-                "days_held": days_held
+                "days_held": days_held,
+                "settle_date": settle_date,
+                "record_id": sig.record_id
             })
             
         except Exception as e:
@@ -563,7 +570,8 @@ def settle_signals(req: SignalSettleRequest):
                 "code": sig.code,
                 "signal_result": "进行中",
                 "action": "ERROR",
-                "reason": str(e)
+                "reason": str(e),
+                "record_id": sig.record_id
             })
     
     return {"signals": results, "timestamp": datetime.datetime.now().isoformat()}
